@@ -564,26 +564,26 @@ func (d *driver) GetNetworkInterfaces(name string) ([]domain.NetworkInterface, e
 	dom, err := d.getDomain(name)
 	if err != nil {
 		d.logger.Error("cannot get domain", "domain", name, "error", err)
-		return nil, fmt.Errorf("libvirt: unable to get domain interfaces %s: %w", name, err)
+		return nil, fmt.Errorf("libvirt: unable to get domain %s: %w", name, err)
 	}
 	xml, err := dom.GetXMLDesc(0)
 	if err != nil {
 		d.logger.Error("cannot get domain XML", "domain", name, "error", err)
-		return nil, fmt.Errorf("libvirt: unable to get domain interfaces %s: %w", name, err)
+		return nil, fmt.Errorf("libvirt: unable to get domain XML %s: %w", name, err)
 	}
 
 	dxml := &libvirtxml.Domain{}
 	if err := dxml.Unmarshal(xml); err != nil {
 		d.logger.Error("cannot parse domain XML", "domain", name, "error", err)
-		return nil, fmt.Errorf("libvirt: unable to get domain interfaces %s: %w", name, err)
+		return nil, fmt.Errorf("libvirt: unable to parse domain XML %s: %w", name, err)
 	}
 
 	interfaces := make([]domain.NetworkInterface, len(dxml.Devices.Interfaces))
 
 	allNetworks, err := d.conn.ListAllNetworks(libvirt.CONNECT_LIST_NETWORKS_ACTIVE)
 	if err != nil {
-		d.logger.Error("cannot list available networks", "error", err)
-		return nil, fmt.Errorf("libvirt: unable to get domain interfaces %s: %w", name, err)
+		d.logger.Error("cannot list available networks", "domain", name, "error", err)
+		return nil, fmt.Errorf("libvirt: unable to get domain interfaces list %s: %w", name, err)
 	}
 
 	bridgeNetworks := map[string]string{}
@@ -615,11 +615,6 @@ func (d *driver) GetNetworkInterfaces(name string) ([]domain.NetworkInterface, e
 			}
 		}
 
-		// This will only be available if the guest agent is available.
-		if iface.Guest != nil {
-			interfaces[i].DeviceName = iface.Guest.Dev
-		}
-
 		if iface.Model != nil {
 			interfaces[i].Model = iface.Model.Type
 		}
@@ -632,7 +627,13 @@ func (d *driver) GetNetworkInterfaces(name string) ([]domain.NetworkInterface, e
 			interfaces[i].MAC = iface.MAC.Address
 		}
 
-		// These will only be available if the guest agent is available.
+		// The Guest and IP values will only be set if the guest agent
+		// is available (as it is responsible for reporting these values).
+		// If it is not, these value will remain unset.
+		if iface.Guest != nil {
+			interfaces[i].DeviceName = iface.Guest.Dev
+		}
+
 		interfaces[i].Addrs = make([]netip.Addr, len(iface.IP))
 		for j, addr := range iface.IP {
 			interfaces[i].Addrs[j], err = netip.ParseAddr(addr.Address)

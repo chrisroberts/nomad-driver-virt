@@ -333,7 +333,7 @@ func Test_CreateStopAndDestroyDomain(t *testing.T) {
 	must.Zero(t, info.InactiveDomains)
 }
 
-func Test_GetDomainNetworkInterfaces(t *testing.T) {
+func Test_GetNetworkInterfaces(t *testing.T) {
 	// The "test:///default" uri connects to a mock hypervisor provided by libvirt
 	// to use for testing.
 	ld := New(context.Background(), hclog.NewNullLogger(),

@@ -15,6 +15,7 @@ import (
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-set"
 	"github.com/hashicorp/nomad-driver-virt/libvirt"
 	"github.com/hashicorp/nomad-driver-virt/virt/net"
 	"github.com/hashicorp/nomad/plugins/drivers"
@@ -200,7 +201,7 @@ func (c *Controller) VMStartedBuild(req *net.VMStartedBuildRequest) (*net.VMStar
 		return nil, fmt.Errorf("failed to lookup network: %w", err)
 	}
 
-	ipAddr, err := c.discoverDHCPLeaseIP(network, req.DomainName, networkName, req.Hwaddrs)
+	ipAddr, err := c.discoverDHCPLeaseIP(network, req.Hostname, networkName, req.Hwaddrs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover IP address: %w", err)
 	}
@@ -254,7 +255,7 @@ func (c *Controller) networkNameFromBridgeName(name string) (string, error) {
 // network. The function includes a ticker in order to poll for the information
 // as this can take several seconds to become available.
 func (c *Controller) discoverDHCPLeaseIP(
-	network libvirt.ConnectNetworkShim, domainName, netName string, hwaddrs []string) (string, error) {
+	network libvirt.ConnectNetworkShim, hostname, netName string, hwaddrs []string) (string, error) {
 
 	ticker := time.NewTicker(c.dhcpLeaseDiscoveryInterval)
 	defer ticker.Stop()
@@ -262,11 +263,7 @@ func (c *Controller) discoverDHCPLeaseIP(
 	timeout := time.NewTimer(c.dhcpLeaseDiscoveryTimeout)
 	defer timeout.Stop()
 
-	macs := make(map[string]struct{}, len(hwaddrs))
-	for _, addr := range hwaddrs {
-		macs[addr] = struct{}{}
-	}
-
+	macs := set.From(hwaddrs)
 	for {
 		select {
 		case <-ticker.C:
@@ -276,7 +273,7 @@ func (c *Controller) discoverDHCPLeaseIP(
 			// debug entry while performing this "long-lived" process should
 			// help operators understand what is happening.
 			c.logger.Debug("attempting DHCP lease discovery",
-				"domain", domainName, "network_name", netName,
+				"hostname", hostname, "network_name", netName,
 				"hwaddrs", hwaddrs)
 
 			// Lookup the DHCP leases of the network. If we receive any error,
@@ -295,7 +292,12 @@ func (c *Controller) discoverDHCPLeaseIP(
 			// Gather all matching leases
 			for _, lease := range dhcpLeases {
 				// Check if lease matches any available interfaces on the domain.
-				if _, ok := macs[lease.Mac]; !ok {
+				if !macs.Contains(lease.Mac) {
+					continue
+				}
+
+				// Check if the hostname is set, and matches
+				if lease.Hostname != "" && lease.Hostname != hostname {
 					continue
 				}
 
@@ -304,7 +306,7 @@ func (c *Controller) discoverDHCPLeaseIP(
 					continue
 				}
 
-				c.logger.Debug("DHCP lease detected", "domain", domainName, "network_name", netName,
+				c.logger.Debug("DHCP lease detected", "hostname", hostname, "network_name", netName,
 					"hwaddrs", hwaddrs, "lease", lease)
 				matches = append(matches, lease)
 			}
@@ -313,18 +315,19 @@ func (c *Controller) discoverDHCPLeaseIP(
 				continue
 			}
 
-			// If any matches were found, sort them by the lease expiry date
-			// and return the address with the expiry furthest in the future.
-			// This is done to handle situations where an interface's MAC
-			// address is being set and the instance has been destroyed and
-			// created again resulting in multiple leases for the same MAC.
+			// If any matches were found, sort them in descending order
+			// by the lease expiry date and return the address with the
+			// expiry furthest in the future. This is done to handle situations
+			// where an interface's MAC address is being set and the instance
+			// has been destroyed and created again resulting in multiple
+			// leases for the same MAC.
 			slices.SortFunc(matches, func(a, b lv.NetworkDHCPLease) int {
-				return a.ExpiryTime.Compare(b.ExpiryTime)
+				return b.ExpiryTime.Compare(a.ExpiryTime)
 			})
 
-			return matches[len(matches)-1].IPaddr, nil
+			return matches[0].IPaddr, nil
 		case <-timeout.C:
-			return "", fmt.Errorf("timeout reached discovering DHCP lease for %q", domainName)
+			return "", fmt.Errorf("timeout reached discovering DHCP lease for %q", hostname)
 		}
 	}
 }
